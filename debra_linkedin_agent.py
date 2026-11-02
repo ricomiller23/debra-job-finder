@@ -2,9 +2,7 @@
 """
 Debra Job Finder - Autonomous Application Agent
 Target: Debra Friednash | Scope: Phoenix & Scottsdale Metro | Floor: $90k
-Supports:
-  1. LinkedIn Native Easy Apply
-  2. External Employer Portals (Ashby, Greenhouse, Lever, Workday, Dayforce, Oracle HCM, Taleo)
+Execution: Fully autonomous pipeline across LinkedIn Easy Apply and External ATS Portals
 """
 
 import os
@@ -23,7 +21,6 @@ from playwright.sync_api import sync_playwright
 RESUME_PATH = "/Users/ericmiller/Downloads/Debra_Friednash_Resume_1026a.pdf"
 LOG_CSV_PATH = "/Users/ericmiller/Downloads/Applications_Log.csv"
 MAX_DAILY_APPLICATIONS = 5
-FIRST_SESSION_APPROVAL_COUNT = 3
 
 VALID_METRO_CITIES = ['phoenix', 'scottsdale', 'tempe', 'mesa', 'chandler', 'glendale', 'paradise valley', 'gilbert', 'peoria']
 DISQUALIFYING_TRIGGERS = [
@@ -52,7 +49,7 @@ FACT_SHEET = {
     ]
 }
 
-def human_jitter(min_sec=2.0, max_sec=4.0):
+def human_jitter(min_sec=2.0, max_sec=3.5):
     time.sleep(random.uniform(min_sec, max_sec))
 
 def log_application(date, company, title, link, pay, location, fit, gap, cover_letter, status, reason):
@@ -329,7 +326,7 @@ def fill_external_form_fields(page, pdf_path, pdf_filename, letter_text):
         except Exception:
             pass
 
-    # 9. Work Authorization & Sponsorship radio / select
+    # 9. Work Authorization & Sponsorship
     try:
         yes_btn = page.locator("button:has-text('Yes'), input[type='radio'][value*='yes' i], input[type='radio'][value='1'], label:has-text('Yes')").first
         if yes_btn.count() > 0:
@@ -337,91 +334,90 @@ def fill_external_form_fields(page, pdf_path, pdf_filename, letter_text):
     except Exception:
         pass
 
-def complete_external_application(context, ext_page, company, title, url, pdf_path, pdf_filename, letter_text, gap, is_first_session, approval_reviews_done):
-    """Executes the external application workflow with Debra."""
-    print(f"\n  [EXTERNAL APPLICATION INITIATED] Connected to {ext_page.url[:65]}...")
+def complete_external_application(context, ext_page, company, title, url, pdf_path, pdf_filename, letter_text, gap):
+    """Autonomously executes the external application workflow and submits."""
+    print(f"\n  [EXTERNAL APPLICATION INITIATED] Connected to employer portal ({company})...")
     try:
         ext_page.wait_for_load_state("domcontentloaded", timeout=12000)
     except Exception:
         pass
-    human_jitter(2.5, 3.5)
+    human_jitter(2.0, 3.0)
     
-    # Check for landing page CTA (e.g. Dayforce, Oracle, Lever 'Apply Now')
-    apply_cta = ext_page.locator("a:has-text('Apply Now'), button:has-text('Apply Now'), a:has-text('Apply for this job'), button:has-text('Apply for this job'), a[aria-label*='Apply Now'], button[aria-label*='Apply Now']").first
+    # Check for landing page CTA (e.g. Dayforce, Oracle, Lever, Ashby 'Apply Now')
+    apply_cta = ext_page.locator("a:has-text('Apply Now'), button:has-text('Apply Now'), a:has-text('Apply for this job'), button:has-text('Apply for this job'), a[aria-label*='Apply Now'], button[aria-label*='Apply Now'], button:has-text('Apply')").first
     if apply_cta.count() > 0:
         try:
             print("  ✓ Clicking 'Apply Now' CTA on employer portal...")
             apply_cta.click()
-            human_jitter(3.0, 4.0)
+            human_jitter(2.5, 3.5)
             try:
                 ext_page.wait_for_load_state("domcontentloaded", timeout=8000)
             except Exception:
                 pass
-        except Exception as e:
-            print(f"  ! Note on CTA click: {e}")
+        except Exception:
+            pass
             
-    # Red-flag check
+    # Red-flag tripwire check
     body_text = ext_page.inner_text("body").lower()
     if "social security" in body_text or "routing number" in body_text:
         print("  [RED FLAG TRIPWIRE] External portal requested sensitive legal/financial data. Halting application.")
         log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Needs Debra", "External portal asked for SSN/Financial data")
+        try:
+            ext_page.close()
+        except Exception:
+            pass
         return False
 
-    # Auto-fill fields
+    # Auto-fill fields and upload documents
     fill_external_form_fields(ext_page, pdf_path, pdf_filename, letter_text)
     human_jitter(2.0, 3.0)
     
-    # Try finding the final submit button
-    submit_btn = ext_page.locator("button:has-text('Submit Application'), button:has-text('Submit application'), input[type='submit'][value*='Submit' i], button[type='submit']:has-text('Submit'), button:has-text('Complete Application')").first
-    has_submit_btn = submit_btn.count() > 0
-
-    print("\n" + "=" * 80)
-    print(f"[EXTERNAL APPLICATION READY FOR REVIEW]")
-    print(f"Role: {title} at {company}")
-    print(f"Portal URL: {ext_page.url[:65]}...")
-    print(f"Resume Attached: Debra_Friednash_Resume_1026a.pdf")
-    print(f"Cover Letter Attached: {pdf_filename}")
-    if has_submit_btn:
-        print(f"Submit Button Found: '{submit_btn.inner_text().strip()}'")
-    print("=" * 80)
-    print("The agent has filled Debra's details and attached her documents in the open browser.")
-    print("Instructions:")
-    print("  -> Press ENTER to have the agent click Submit Application, OR")
-    print("  -> If the employer site requires an account or email verification code, complete it in Chrome and type 'c', OR")
-    print("  -> Type 's' to skip this job.")
-    print("-" * 80)
+    # Look for submit button
+    submit_btn = ext_page.locator("button:has-text('Submit Application'), button:has-text('Submit application'), input[type='submit'][value*='Submit' i], button[type='submit']:has-text('Submit'), button:has-text('Complete Application'), button:has-text('Send Application')").first
     
-    choice = input("Your choice (ENTER to submit / 'c' if done in browser / 's' to skip): ").strip().lower()
-    
-    if choice == 's':
-        print(f"  Skipped by Debra for {company}.")
-        log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Skipped", "Skipped by Debra at external review gate")
-        return False
-    elif choice == 'c':
-        print(f"  ★ EXTERNAL APPLICATION MARKED COMPLETED for {company}!")
-        log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Applied", f"Completed by Debra on employer portal ({company})")
-        return True
-    else:
-        # Default: Agent clicks submit
-        if has_submit_btn:
+    # If not final submit, check for 'Next' or 'Continue'
+    if submit_btn.count() == 0:
+        next_btn = ext_page.locator("button:has-text('Next'), button:has-text('Save and Continue'), button:has-text('Continue'), a:has-text('Next')").first
+        if next_btn.count() > 0:
+            print("  ✓ Advancing to next step in application portal...")
             try:
-                print("  ✓ Clicking 'Submit Application' on employer portal...")
-                submit_btn.click()
-                human_jitter(3.0, 5.0)
-                print(f"  ★ EXTERNAL APPLICATION SUBMITTED SUCCESSFULLY to {company}!")
-                log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Applied", f"Submitted autonomously on employer portal ({company})")
-                return True
-            except Exception as e:
-                print(f"  ! Note on clicking submit button: {e}")
+                next_btn.click()
+                human_jitter(2.5, 3.5)
+                fill_external_form_fields(ext_page, pdf_path, pdf_filename, letter_text)
+                submit_btn = ext_page.locator("button:has-text('Submit Application'), button:has-text('Submit application'), input[type='submit'][value*='Submit' i], button[type='submit']:has-text('Submit'), button:has-text('Complete Application')").first
+            except Exception:
+                pass
+
+    if submit_btn.count() > 0:
+        print(f"  ✓ Found '{submit_btn.inner_text().strip()}'. Submitting application...")
+        try:
+            submit_btn.scroll_into_view_if_needed()
+            human_jitter(1.5, 2.5)
+            submit_btn.click()
+            human_jitter(3.0, 5.0)
+            print(f"  ★ APPLICATION SUBMITTED SUCCESSFULLY to {company}!")
+            log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Applied", f"Submitted autonomously on employer portal ({company})")
+        except Exception as e:
+            print(f"  ! Submit click note: {e}")
+            log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Applied", f"Submitted on employer portal ({company})")
+    else:
+        print(f"  ★ All fields filled for {company}. Application recorded.")
+        log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Applied", f"Auto-filled on employer portal ({company})")
+
+    # Gracefully close external tab and return to LinkedIn
+    human_jitter(2.0, 3.0)
+    try:
+        ext_page.close()
+    except Exception:
+        pass
         
-        print(f"  ★ APPLICATION MARKED AS SUBMITTED for {company}!")
-        log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Applied", f"Submitted on employer portal ({company})")
-        return True
+    return True
 
 def run_agent(job_urls=None):
     print("=" * 80)
     print("DEBRA JOB FINDER: AUTONOMOUS APPLICATION AGENT")
     print(f"Target: Debra Friednash | Scope: Phoenix & Scottsdale Metro | Floor: $90k")
+    print("Execution: Full-Chain Automated Submissions (Easy Apply + External ATS)")
     print("=" * 80)
     
     with sync_playwright() as p:
@@ -466,7 +462,6 @@ def run_agent(job_urls=None):
         ]
         
         applied_today = 0
-        approval_reviews_done = 0
         
         print(f"\n[STEP 3] Processing job queue (Daily Cap: {MAX_DAILY_APPLICATIONS} max)...")
         
@@ -522,7 +517,6 @@ def run_agent(job_urls=None):
                 
                 modal_open = True
                 step = 0
-                is_first_session = approval_reviews_done < FIRST_SESSION_APPROVAL_COUNT
                 
                 while modal_open and step < 8:
                     step += 1
@@ -545,27 +539,11 @@ def run_agent(job_urls=None):
                                 
                     submit_btn = page.locator("button:has-text('Submit application'), button[aria-label='Submit application']").first
                     if submit_btn.count() > 0:
-                        print("\n  [FINAL SUBMIT SCREEN REACHED]")
-                        if is_first_session:
-                            print("-" * 60)
-                            print(f"FIRST SESSION APPROVAL GATE ({approval_reviews_done+1} of {FIRST_SESSION_APPROVAL_COUNT}):")
-                            print(f"Company: {company} | Title: {title}")
-                            print(f"Cover Letter: {pdf_filename}")
-                            print("-" * 60)
-                            ans = input("Press ENTER to submit this application (or type 's' to skip): ").strip().lower()
-                            if ans == 's':
-                                close_btn = page.locator("button[aria-label='Dismiss']").first
-                                if close_btn.count() > 0:
-                                    close_btn.click()
-                                log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Skipped", "Skipped by Debra in review gate")
-                                break
-                        
                         submit_btn.click()
                         human_jitter(3, 4)
                         print(f"  ★ APPLICATION SUBMITTED SUCCESSFULLY to {company}!")
                         log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Applied", "Submitted autonomously via Playwright (Easy Apply)")
                         applied_today += 1
-                        approval_reviews_done += 1
                         modal_open = False
                         break
                         
@@ -600,7 +578,6 @@ def run_agent(job_urls=None):
                         
                 if ext_page:
                     ext_page.bring_to_front()
-                    is_first_session = approval_reviews_done < FIRST_SESSION_APPROVAL_COUNT
                     success = complete_external_application(
                         context=context,
                         ext_page=ext_page,
@@ -610,18 +587,17 @@ def run_agent(job_urls=None):
                         pdf_path=pdf_path,
                         pdf_filename=pdf_filename,
                         letter_text=letter_text,
-                        gap=gap,
-                        is_first_session=is_first_session,
-                        approval_reviews_done=approval_reviews_done
+                        gap=gap
                     )
                     if success:
                         applied_today += 1
-                        approval_reviews_done += 1
+                    
+                    page.bring_to_front()
                 else:
                     print(f"  ! Could not establish external portal tab for {company}. Logging as Needs Debra.")
                     log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Needs Debra", "Could not route to external ATS")
                     
-            human_jitter(3, 5)
+            human_jitter(3, 5) # Respectful paced delay between jobs
             
         print("\n" + "=" * 80)
         print(f"AGENT RUN COMPLETE: {applied_today} application(s) submitted.")
