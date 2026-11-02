@@ -3,6 +3,7 @@
 Debra Job Finder - Autonomous Application Agent
 Target: Debra Friednash | Scope: Phoenix & Scottsdale Metro | Floor: $90k
 Execution: Fully autonomous pipeline across LinkedIn Easy Apply and External ATS Portals
+Policy: Strictly prevents duplicate applications (reads Applications_Log.csv)
 """
 
 import os
@@ -11,6 +12,8 @@ import time
 import random
 import csv
 import re
+import json
+import urllib.request
 from datetime import datetime
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
@@ -51,6 +54,23 @@ FACT_SHEET = {
 
 def human_jitter(min_sec=2.0, max_sec=3.5):
     time.sleep(random.uniform(min_sec, max_sec))
+
+def get_already_applied_job_ids():
+    """Reads Applications_Log.csv and returns set of job IDs that have already been applied to."""
+    applied_ids = set()
+    if not os.path.exists(LOG_CSV_PATH):
+        return applied_ids
+    with open(LOG_CSV_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) > 9:
+                status = row[9].strip().lower()
+                link = row[3] if len(row) > 3 else ""
+                if "applied" in status or "4479224366" in link or "xnrgy" in str(row).lower():
+                    m = re.search(r'(\d{8,12})', link)
+                    if m:
+                        applied_ids.add(m.group(1))
+    return applied_ids
 
 def log_application(date, company, title, link, pay, location, fit, gap, cover_letter, status, reason):
     file_exists = os.path.exists(LOG_CSV_PATH)
@@ -204,7 +224,7 @@ def fill_easy_apply_form_fields(page, pdf_path, pdf_filename):
                 pass
 
 def fill_external_form_fields(page, pdf_path, pdf_filename, letter_text):
-    """Auto-fills applicant fields on external ATS systems (Ashby, Greenhouse, Lever, Dayforce, etc.)."""
+    """Auto-fills applicant fields on external ATS systems (Dayforce, Oracle, Ashby, Lever, etc.)."""
     print("  -> Auto-filling applicant details and documents on employer portal...")
     
     # 1. Full Name / First Name / Last Name
@@ -343,7 +363,7 @@ def complete_external_application(context, ext_page, company, title, url, pdf_pa
         pass
     human_jitter(2.0, 3.0)
     
-    # Check for landing page CTA (e.g. Dayforce, Oracle, Lever, Ashby 'Apply Now')
+    # Check for landing page CTA (e.g. Dayforce, Oracle, Lever 'Apply Now')
     apply_cta = ext_page.locator("a:has-text('Apply Now'), button:has-text('Apply Now'), a:has-text('Apply for this job'), button:has-text('Apply for this job'), a[aria-label*='Apply Now'], button[aria-label*='Apply Now'], button:has-text('Apply')").first
     if apply_cta.count() > 0:
         try:
@@ -420,6 +440,32 @@ def run_agent(job_urls=None):
     print("Execution: Full-Chain Automated Submissions (Easy Apply + External ATS)")
     print("=" * 80)
     
+    # 1. Fetch already applied job IDs
+    applied_ids = get_already_applied_job_ids()
+    print(f"Audit log check: {len(applied_ids)} previously applied position(s) will be automatically skipped.")
+    
+    # 2. Build target candidate list (starting with unapplied positions)
+    master_targets = [
+        "https://www.linkedin.com/jobs/view/4484982852", # Atlas Healthcare (Dayforce)
+        "https://www.linkedin.com/jobs/view/4483032552", # JPMorgan Chase (Oracle HCM)
+        "https://www.linkedin.com/jobs/view/4479797419", # Columbia Bank (Phoenix)
+        "https://www.linkedin.com/jobs/view/4429663379", # Plombon Insurance (Glendale)
+        "https://www.linkedin.com/jobs/view/4480555752", # Author & Edit (Phoenix)
+        "https://www.linkedin.com/jobs/view/4485604380", # The Keller Group (Scottsdale)
+        "https://www.linkedin.com/jobs/view/4464141376"  # OrthoArizona (Phoenix)
+    ]
+    
+    # Filter out any that have already been applied to
+    target_urls = []
+    for u in (job_urls or master_targets):
+        m = re.search(r'(\d{8,12})', u)
+        if m and m.group(1) in applied_ids:
+            print(f"  -> Skipping {u} (Already successfully applied)")
+            continue
+        target_urls.append(u)
+        
+    print(f"Active queue assembled: {len(target_urls)} new position(s) ready to process.")
+    
     with sync_playwright() as p:
         print("\n[STEP 1] Connecting to Chrome session...")
         try:
@@ -453,14 +499,6 @@ def run_agent(job_urls=None):
             print("!" * 80)
             input()
             
-        target_urls = job_urls or [
-            "https://www.linkedin.com/jobs/view/4479224366", # XNRGY Climate Systems (Ashby)
-            "https://www.linkedin.com/jobs/view/4484982852", # Atlas Healthcare (Dayforce)
-            "https://www.linkedin.com/jobs/view/4483032552", # JPMorgan Chase (Oracle HCM)
-            "https://www.linkedin.com/jobs/view/4479797419", # Columbia Bank (Phoenix)
-            "https://www.linkedin.com/jobs/view/4429663379"  # Plombon Insurance (Glendale)
-        ]
-        
         applied_today = 0
         
         print(f"\n[STEP 3] Processing job queue (Daily Cap: {MAX_DAILY_APPLICATIONS} max)...")
