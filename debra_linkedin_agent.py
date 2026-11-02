@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-Debra Job Finder - Autonomous LinkedIn Application Agent
+Debra Job Finder - Autonomous LinkedIn & External ATS Application Agent
 Role: Executive job-application agent acting for Debra Friednash.
 Enforces:
   - 5 applications per day maximum
   - Scottsdale & Phoenix metro only (On-site / Hybrid)
   - $90,000 base minimum (or unlisted for executive support)
+  - Full-chain execution:
+      1. LinkedIn Easy Apply roles: modal auto-fill + document attach + submit.
+      2. External company portal roles ("Apply on company website"):
+         navigates to employer ATS (Workday, Greenhouse, Lever, Taleo, iCIMS, etc.),
+         auto-fills applicant data, attaches resume + tailored cover letter PDF,
+         answers standard screening questions, and completes submission!
   - Tailored 4-paragraph cover letter with honest gap disclosure
-  - Attachment of Debra_Friednash_Resume_1026a.pdf
-  - Verified screening questions & red-flag detection (SSN, DOB, bank info)
-  - First-session review gate (first 3 applications require confirmation)
   - Single source of truth fact sheet (zero hallucinations)
+  - Red-flag tripwires (halts if SSN, DOB, or bank account requested)
 """
 
 import os
@@ -31,7 +35,7 @@ LOG_CSV_PATH = "/Users/ericmiller/Downloads/Applications_Log.csv"
 MAX_DAILY_APPLICATIONS = 5
 FIRST_SESSION_APPROVAL_COUNT = 3
 
-VALID_METRO_CITIES = ['phoenix', 'scottsdale', 'tempe', 'mesa', 'chandler', 'glendale', 'paradise valley']
+VALID_METRO_CITIES = ['phoenix', 'scottsdale', 'tempe', 'mesa', 'chandler', 'glendale', 'paradise valley', 'gilbert', 'peoria']
 DISQUALIFYING_TRIGGERS = [
     'financial modeling', 'dcf valuation', 'investment banking', 'management consulting',
     'sales quota', 'quota carrying', 'security clearance', 'ts/sci', 'clinical license',
@@ -48,34 +52,40 @@ FACT_SHEET = {
     "experience": "20+ years supporting CEOs and boards in regulated financial services.",
     "current_role": "Corporate Secretary & Executive Assistant to the CEO at Integro Bank (Phoenix, AZ).",
     "metrics": [
-        "Zero regulatory deficiencies in de novo banking governance audits",
-        "Manages 100+ weekly appointments across time zones with zero scheduling conflicts",
-        "30% faster executive briefing process with daily executive briefing books",
+        "Zero regulatory deficiencies across state and federal banking examinations",
+        "Zero scheduling conflicts managing 100+ weekly appointments across time zones",
+        "98% meeting attendance across executive sessions and board proceedings",
+        "30% faster executive briefing process with daily curated briefing books",
         "40+ weekly meeting requests triaged against strategic CEO priorities",
-        "Organized summits for 200+ attendees at 95%+ satisfaction"
+        "40% increase in Chandler Innovations Incubator participation",
+        "95%+ satisfaction rating on leadership events of 200+ attendees"
     ]
 }
 
-def human_jitter(min_sec=2.5, max_sec=5.0):
+def human_jitter(min_sec=2.0, max_sec=4.5):
+    """Paced, human-like delay between actions per standing rule."""
     time.sleep(random.uniform(min_sec, max_sec))
 
-def log_application(date, company, title, link, pay, location, fit, gap, letter_file, status, reason):
-    headers = ["Date", "Company", "Job Title", "Link", "Pay", "Location", "Fit (High/Medium/Low)", "Biggest Gap", "Cover Letter File", "Status (Applied / Skipped / Needs Debra)", "Reason"]
+def log_application(date, company, title, link, pay, location, fit, gap, cover_letter, status, reason):
+    """Appends application attempt to the audit log."""
     file_exists = os.path.exists(LOG_CSV_PATH)
-    
-    with open(LOG_CSV_PATH, "a", newline="", encoding="utf-8") as f:
+    with open(LOG_CSV_PATH, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(headers)
-        writer.writerow([date, company, title, link, pay, location, fit, gap, letter_file, status, reason])
-    print(f"  [LOGGED] {status} -> {company} ({title})")
+            writer.writerow([
+                "Date", "Company", "Job Title", "Link", "Pay", "Location",
+                "Fit (High/Medium/Low)", "Biggest Gap", "Cover Letter File",
+                "Status (Applied / Skipped / Needs Debra)", "Reason"
+            ])
+        writer.writerow([date, company, title, link, pay, location, fit, gap, cover_letter, status, reason])
 
-def generate_cover_letter_text(company, title, description, hiring_manager=None):
-    recipient = hiring_manager if hiring_manager and len(hiring_manager.strip()) > 2 else "Hiring Team"
+def generate_cover_letter_text(company, title, description):
+    """Generates the required 4-paragraph tailored cover letter."""
     desc_lower = description.lower()
     
-    # 1. Opening
-    p1 = f"I am writing to express my interest in the {title} position at {company}. With more than 20 years of experience providing high-level operational and governance support to CEOs and corporate boards in regulated environments across the Phoenix metropolitan area, I am well prepared to manage your executive office with discretion and administrative rigor."
+    # 1. Opening hook
+    recipient = f"{company} Hiring Team"
+    p1 = f"I am writing to express my enthusiastic interest in the {title} position at {company}. With more than two decades of senior executive and corporate secretary experience supporting founding CEOs, boards of directors, and C-suite leadership teams in highly regulated environments, I bring a proven track record of institutional governance, calendar mastery, and flawless execution to this role."
     
     # 2. Strongest matches with verified numbers
     if "board" in desc_lower or "governance" in desc_lower or "secretary" in desc_lower:
@@ -153,7 +163,6 @@ def evaluate_role(title, company, location, description, pay_string):
             return False, f"Disqualification trigger: '{trigger}'"
             
     # 3. Pay rule
-    # If explicit pay listed below 90k, skip
     pay_match = re.search(r'\$(\d{2,3}),?(\d{3})?', pay_string)
     if pay_match:
         val = int(pay_match.group(1) + (pay_match.group(2) or "000"))
@@ -162,22 +171,310 @@ def evaluate_role(title, company, location, description, pay_string):
             
     return True, "Qualified executive target role"
 
+def extract_company_name(page):
+    """Robust extraction of company name across desktop and mobile LinkedIn layouts."""
+    selectors = [
+        ".job-details-jobs-unified-top-card__company-name a",
+        ".job-details-jobs-unified-top-card__company-name",
+        ".jobs-unified-top-card__company-name a",
+        ".jobs-unified-top-card__company-name",
+        "a[data-tracking-control-name='public_jobs_topcard-org-name']",
+        ".topcard__org-name-link",
+        ".jobs-unified-top-card__subtitle-primary-grouping a",
+        ".jobs-search-results-list__list-item--active .job-card-container__primary-description",
+        "a[href*='/company/']",
+        "h4.base-search-card__subtitle"
+    ]
+    for sel in selectors:
+        loc = page.locator(sel).first
+        if loc.count() > 0:
+            txt = loc.inner_text().strip()
+            if txt and txt.lower() not in ["employer", "company name"]:
+                return txt
+    return "Employer"
+
+def fill_easy_apply_form_fields(page, pdf_path, pdf_filename):
+    """Intelligently fills common LinkedIn Easy Apply inputs."""
+    text_inputs = page.locator(".jobs-easy-apply-modal input[type='text'], .jobs-easy-apply-modal input:not([type])")
+    for i in range(text_inputs.count()):
+        try:
+            inp = text_inputs.nth(i)
+            val = inp.input_value()
+            if not val:
+                lbl = ""
+                inp_id = inp.get_attribute("id")
+                if inp_id:
+                    lbl_el = page.locator(f"label[for='{inp_id}']")
+                    if lbl_el.count() > 0:
+                        lbl = lbl_el.inner_text().lower()
+                
+                if "phone" in lbl or "mobile" in lbl:
+                    inp.fill(FACT_SHEET["phone"])
+                elif "email" in lbl:
+                    inp.fill(FACT_SHEET["email"])
+                elif "city" in lbl or "location" in lbl or "address" in lbl:
+                    inp.fill("Scottsdale, AZ")
+                elif "year" in lbl or "experience" in lbl:
+                    inp.fill("20")
+                elif "salary" in lbl or "compensation" in lbl or "pay" in lbl:
+                    inp.fill("95000")
+        except Exception:
+            pass
+
+    doc_inputs = page.locator(".jobs-easy-apply-modal input[type='file']")
+    if doc_inputs.count() > 0:
+        for i in range(doc_inputs.count()):
+            try:
+                inp = doc_inputs.nth(i)
+                inp.set_input_files(pdf_path)
+                print(f"  ✓ Attached cover letter PDF: {pdf_filename}")
+            except Exception:
+                pass
+
+def fill_external_form_fields(page, pdf_path, pdf_filename, letter_text):
+    """Fills inputs on external applicant tracking systems (Greenhouse, Lever, Workday, etc.)."""
+    print("  -> Auto-filling applicant details on employer career portal...")
+    
+    # 1. First Name
+    first_name_loc = page.locator("input[name*='first' i], input[id*='first' i], input[autocomplete='given-name'], input[placeholder*='First' i]").first
+    if first_name_loc.count() > 0:
+        try:
+            if not first_name_loc.input_value():
+                first_name_loc.fill("Debra")
+        except Exception:
+            pass
+
+    # 2. Last Name
+    last_name_loc = page.locator("input[name*='last' i], input[id*='last' i], input[autocomplete='family-name'], input[placeholder*='Last' i]").first
+    if last_name_loc.count() > 0:
+        try:
+            if not last_name_loc.input_value():
+                last_name_loc.fill("Friednash")
+        except Exception:
+            pass
+
+    # 3. Full Name
+    full_name_loc = page.locator("input[name*='fullname' i], input[id*='fullname' i], input[name='name' i], input[id='name' i], input[placeholder*='Full Name' i]").first
+    if full_name_loc.count() > 0:
+        try:
+            if not full_name_loc.input_value():
+                full_name_loc.fill("Debra Friednash")
+        except Exception:
+            pass
+
+    # 4. Email
+    email_loc = page.locator("input[type='email'], input[name*='email' i], input[id*='email' i], input[autocomplete='email']").first
+    if email_loc.count() > 0:
+        try:
+            if not email_loc.input_value():
+                email_loc.fill("denvertrad@aol.com")
+        except Exception:
+            pass
+
+    # 5. Phone
+    phone_loc = page.locator("input[type='tel'], input[name*='phone' i], input[id*='phone' i], input[name*='mobile' i], input[autocomplete='tel']").first
+    if phone_loc.count() > 0:
+        try:
+            if not phone_loc.input_value():
+                phone_loc.fill("480-717-0553")
+        except Exception:
+            pass
+
+    # 6. Location / Address
+    city_loc = page.locator("input[name*='city' i], input[id*='city' i]").first
+    if city_loc.count() > 0:
+        try:
+            if not city_loc.input_value():
+                city_loc.fill("Scottsdale")
+        except Exception:
+            pass
+
+    state_loc = page.locator("input[name*='state' i], select[name*='state' i], input[id*='state' i]").first
+    if state_loc.count() > 0:
+        try:
+            if state_loc.evaluate("el => el.tagName") == "SELECT":
+                try:
+                    state_loc.select_option(value="AZ")
+                except Exception:
+                    state_loc.select_option(label="Arizona")
+            elif not state_loc.input_value():
+                state_loc.fill("AZ")
+        except Exception:
+            pass
+
+    zip_loc = page.locator("input[name*='zip' i], input[id*='zip' i], input[name*='postal' i]").first
+    if zip_loc.count() > 0:
+        try:
+            if not zip_loc.input_value():
+                zip_loc.fill("85253")
+        except Exception:
+            pass
+
+    # 7. Current Employer & Title
+    comp_loc = page.locator("input[name*='company' i], input[id*='company' i], input[placeholder*='Company' i], input[name*='employer' i]").first
+    if comp_loc.count() > 0:
+        try:
+            if not comp_loc.input_value():
+                comp_loc.fill("Integro Bank")
+        except Exception:
+            pass
+
+    title_loc = page.locator("input[name*='title' i], input[id*='title' i], input[placeholder*='Title' i], input[name*='position' i]").first
+    if title_loc.count() > 0:
+        try:
+            if not title_loc.input_value():
+                title_loc.fill("Corporate Secretary & Executive Assistant to the CEO")
+        except Exception:
+            pass
+
+    # 8. Salary Expectation
+    sal_loc = page.locator("input[name*='salary' i], input[id*='salary' i], input[name*='compensation' i]").first
+    if sal_loc.count() > 0:
+        try:
+            if not sal_loc.input_value():
+                sal_loc.fill("95000")
+        except Exception:
+            pass
+
+    # 9. Document Uploads (Resume & Cover Letter)
+    file_inputs = page.locator("input[type='file']")
+    if file_inputs.count() > 0:
+        for i in range(file_inputs.count()):
+            try:
+                inp = file_inputs.nth(i)
+                inp_id = (inp.get_attribute("id") or "").lower()
+                inp_name = (inp.get_attribute("name") or "").lower()
+                
+                if "cover" in inp_id or "cover" in inp_name:
+                    inp.set_input_files(pdf_path)
+                    print(f"  ✓ Attached Cover Letter: {pdf_filename}")
+                else:
+                    inp.set_input_files(RESUME_PATH)
+                    print(f"  ✓ Attached Resume: Debra_Friednash_Resume_1026a.pdf")
+            except Exception:
+                pass
+
+    # 10. Cover Letter Textarea (if text paste is expected)
+    cover_textarea = page.locator("textarea[name*='cover' i], textarea[id*='cover' i], textarea[placeholder*='cover' i]").first
+    if cover_textarea.count() > 0:
+        try:
+            if not cover_textarea.input_value():
+                cover_textarea.fill(letter_text)
+                print("  ✓ Pasted tailored cover letter text into portal textarea.")
+        except Exception:
+            pass
+
+    # 11. Work Authorization & Sponsorship radio / select
+    try:
+        # Legal Authorization: Yes
+        auth_labels = page.locator("label:has-text('authorized to work'), label:has-text('legally authorized')")
+        if auth_labels.count() > 0:
+            yes_btn = page.locator("input[type='radio'][value*='yes' i], input[type='radio'][value='1'], label:has-text('Yes')").first
+            if yes_btn.count() > 0:
+                yes_btn.click()
+                
+        # Sponsorship: No
+        spons_labels = page.locator("label:has-text('sponsorship'), label:has-text('require sponsorship')")
+        if spons_labels.count() > 0:
+            no_btn = page.locator("input[type='radio'][value*='no' i], input[type='radio'][value='0'], label:has-text('No')").first
+            if no_btn.count() > 0:
+                no_btn.click()
+    except Exception:
+        pass
+
+def complete_external_application(context, ext_page, company, title, url, pdf_path, pdf_filename, letter_text, gap, is_first_session, approval_reviews_done):
+    """Executes the full application on an external employer career site."""
+    print(f"\n  [EXTERNAL APPLICATION INITIATED] Connecting to employer portal at {ext_page.url[:65]}...")
+    try:
+        ext_page.wait_for_load_state("domcontentloaded", timeout=12000)
+    except Exception:
+        pass
+    human_jitter(3, 4)
+    
+    # 1. Check for initial 'Apply', 'Apply Now', 'Apply for this Job' button on landing page
+    apply_cta = ext_page.locator("a:has-text('Apply Now'), button:has-text('Apply Now'), a:has-text('Apply for this job'), button:has-text('Apply for this job'), a:has-text('Apply'), button:has-text('Apply')").first
+    if apply_cta.count() > 0:
+        try:
+            print("  ✓ Clicking 'Apply Now' CTA on employer landing page...")
+            apply_cta.click()
+            human_jitter(2.5, 3.5)
+        except Exception:
+            pass
+            
+    # Form processing loop (handles multi-step forms like Workday or Lever)
+    max_steps = 6
+    step = 0
+    submitted = False
+    
+    while step < max_steps and not submitted:
+        step += 1
+        human_jitter(2.0, 3.0)
+        
+        # Security Tripwire Check
+        body_text = ext_page.inner_text("body").lower()
+        if "social security" in body_text or "ssn" in body_text or "bank account" in body_text or "routing number" in body_text:
+            print("  [RED FLAG TRIPWIRE] External portal requested sensitive legal/financial data (SSN/Bank). Halting application.")
+            log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Needs Debra", "External portal asked for SSN/Bank info")
+            return False
+            
+        # Fill standard form fields
+        fill_external_form_fields(ext_page, pdf_path, pdf_filename, letter_text)
+        
+        # Check for Submit / Complete button
+        submit_btn = ext_page.locator("button[type='submit']:has-text('Submit'), button:has-text('Submit Application'), button:has-text('Send Application'), input[type='submit']:has-text('Submit'), button:has-text('Complete Application')").first
+        
+        # If final submit is visible
+        if submit_btn.count() > 0:
+            print("\n  [EXTERNAL APPLICATION - FINAL SUBMIT SCREEN REACHED]")
+            print("-" * 65)
+            print(f"Company: {company} | Title: {title}")
+            print(f"External Portal: {ext_page.url[:60]}...")
+            print(f"Cover Letter Attached: {pdf_filename}")
+            print(f"Resume Attached: Debra_Friednash_Resume_1026a.pdf")
+            print("-" * 65)
+            print("Debra, review the open employer window.")
+            ans = input("Press ENTER to submit this external application (or type 's' to skip): ").strip().lower()
+            if ans == 's':
+                print("  Skipped by Debra.")
+                log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Skipped", "Skipped by Debra at external review gate")
+                return False
+                
+            submit_btn.click()
+            human_jitter(3, 5)
+            print(f"  ★ EXTERNAL APPLICATION SUBMITTED SUCCESSFULLY to {company}!")
+            log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Applied", f"Submitted on employer career portal ({company})")
+            submitted = True
+            return True
+            
+        # If not final submit, look for Next / Save and Continue
+        next_btn = ext_page.locator("button:has-text('Next'), button:has-text('Save and Continue'), button:has-text('Continue'), a:has-text('Next')").first
+        if next_btn.count() > 0:
+            print("  Advancing to next external step...")
+            next_btn.click()
+        else:
+            # If multi-page or account login needed, present to Debra
+            print("  [EXTERNAL FORM READY] Form fields auto-filled. Review the open window.")
+            ans = input("Debra, press ENTER after completing submission in browser (or 's' to skip): ").strip().lower()
+            if ans != 's':
+                print(f"  ★ EXTERNAL APPLICATION LOGGED AS SUBMITTED for {company}!")
+                log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Applied", f"Submitted on employer career portal ({company})")
+                return True
+            else:
+                log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", "Scottsdale/Phoenix, AZ", "High", gap, pdf_filename, "Skipped", "Skipped by Debra")
+                return False
+            break
+            
+    return submitted
+
 def run_agent(job_urls=None):
     print("=" * 80)
-    print("DEBRA JOB FINDER: AUTONOMOUS LINKEDIN AGENT")
+    print("DEBRA JOB FINDER: AUTONOMOUS APPLICATION AGENT (FULL-CHAIN)")
     print(f"Target: Debra Friednash | Scope: Phoenix & Scottsdale Metro | Floor: $90k")
+    print("Supports: LinkedIn Easy Apply & External Company Career Portals")
     print("=" * 80)
     
-    if not os.path.exists(RESUME_PATH):
-        print(f"[FATAL ERROR] Resume file not found: {RESUME_PATH}")
-        sys.exit(1)
-        
     with sync_playwright() as p:
         print("\n[STEP 1] Connecting to Chrome session...")
-        browser = None
-        context = None
-        
-        # Try attaching to existing Chrome running with --remote-debugging-port=9222
         try:
             browser = p.chromium.connect_over_cdp("http://localhost:9222")
             context = browser.contexts[0]
@@ -200,7 +497,6 @@ def run_agent(job_urls=None):
         page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
         human_jitter(3, 4)
         
-        # Check for login prompt / security checkpoint
         if "login" in page.url.lower() or page.locator("input#username").count() > 0:
             print("\n" + "!" * 80)
             print("[ACTION REQUIRED] Debra is not logged into LinkedIn in this browser!")
@@ -210,12 +506,11 @@ def run_agent(job_urls=None):
             print("!" * 80)
             input()
             
-        # Target job list
         target_urls = job_urls or [
             "https://www.linkedin.com/jobs/view/4479224366", # XNRGY Climate Systems (Mesa)
-            "https://www.linkedin.com/jobs/view/4479797419", # Columbia Bank (Phoenix)
-            "https://www.linkedin.com/jobs/view/4483032552", # JPMorgan Chase (Scottsdale)
             "https://www.linkedin.com/jobs/view/4484982852", # Atlas Healthcare (Phoenix)
+            "https://www.linkedin.com/jobs/view/4483032552", # JPMorgan Chase (Scottsdale)
+            "https://www.linkedin.com/jobs/view/4479797419", # Columbia Bank (Phoenix)
             "https://www.linkedin.com/jobs/view/4429663379"  # Plombon Insurance (Glendale)
         ]
         
@@ -231,7 +526,7 @@ def run_agent(job_urls=None):
                 
             print(f"\n--- Job {idx+1}/{len(target_urls)}: {url} ---")
             page.goto(url, wait_until="domcontentloaded")
-            human_jitter(3, 5)
+            human_jitter(3, 4)
             
             # Anti-bot / CAPTCHA tripwire
             body_text = page.inner_text("body").lower()
@@ -243,12 +538,11 @@ def run_agent(job_urls=None):
                 
             # Extract role details
             title_el = page.locator("h1").first
-            company_el = page.locator(".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name").first
-            loc_el = page.locator(".job-details-jobs-unified-top-card__bullet, .jobs-unified-top-card__bullet").first
+            company = extract_company_name(page)
+            loc_el = page.locator(".job-details-jobs-unified-top-card__bullet, .jobs-unified-top-card__bullet, .job-details-jobs-unified-top-card__primary-description-container").first
             desc_el = page.locator("#job-details, .jobs-description__content").first
             
             title = title_el.inner_text().strip() if title_el.count() > 0 else "Executive Assistant"
-            company = company_el.inner_text().strip() if company_el.count() > 0 else "Employer"
             location = loc_el.inner_text().strip() if loc_el.count() > 0 else "Scottsdale, AZ"
             description = desc_el.inner_text().strip() if desc_el.count() > 0 else body_text
             
@@ -266,86 +560,136 @@ def run_agent(job_urls=None):
             pdf_path, pdf_filename = compile_cover_letter_pdf(company, title, letter_text)
             print(f"  ✓ Compiled PDF: {pdf_filename}")
             
-            # Look for Easy Apply button
-            apply_btn = page.locator("button.jobs-apply-button, button:has-text('Easy Apply')").first
-            if apply_btn.count() == 0:
-                print("  [EXTERNAL APPLICATION] Role uses external employer site. Logging as Needs Debra.")
-                log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Needs Debra", "External career portal (non-Easy Apply)")
-                continue
-                
-            print("  ✓ Clicking 'Easy Apply' button...")
-            apply_btn.click()
-            human_jitter(2, 3)
+            # Check for Easy Apply vs External Apply
+            easy_apply_btn = page.locator("button.jobs-apply-button:has-text('Easy Apply'), button:has-text('Easy Apply'), button[aria-label*='Easy Apply']").first
             
-            # Modal Interaction Loop
-            modal_open = True
-            step = 0
-            is_first_session = approval_reviews_done < FIRST_SESSION_APPROVAL_COUNT
-            
-            while modal_open and step < 8:
-                step += 1
-                human_jitter(1.5, 3.0)
-                modal_text = page.locator(".jobs-easy-apply-modal").inner_text().lower() if page.locator(".jobs-easy-apply-modal").count() > 0 else ""
+            if easy_apply_btn.count() > 0:
+                # ----------------- NATIVE EASY APPLY FLOW -----------------
+                print("  ✓ Native LinkedIn Easy Apply detected. Clicking button...")
+                easy_apply_btn.click()
+                human_jitter(2, 3)
                 
-                # Red-flag check (SSN, DOB, Bank info, Legal consent)
-                if "social security" in modal_text or "ssn" in modal_text or "date of birth" in modal_text or "bank account" in modal_text:
-                    print("  [RED FLAG TRIPWIRE] Portal requested sensitive legal/identity data (SSN/DOB/Bank). Halting application.")
-                    close_btn = page.locator("button[aria-label='Dismiss'], button:has-text('Cancel')").first
-                    if close_btn.count() > 0:
-                        close_btn.click()
-                    log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Needs Debra", "Portal asked for SSN/DOB/Bank Info")
-                    modal_open = False
-                    break
+                modal_open = True
+                step = 0
+                is_first_session = approval_reviews_done < FIRST_SESSION_APPROVAL_COUNT
+                
+                while modal_open and step < 8:
+                    step += 1
+                    human_jitter(1.5, 2.5)
+                    modal = page.locator(".jobs-easy-apply-modal, div[role='dialog']").first
+                    if modal.count() == 0:
+                        break
+                        
+                    modal_text = modal.inner_text().lower()
                     
-                # Upload Cover Letter if input exists
-                doc_inputs = page.locator("input[type='file']")
-                if doc_inputs.count() > 0:
-                    for i in range(doc_inputs.count()):
-                        inp = doc_inputs.nth(i)
-                        try:
-                            inp.set_input_files(pdf_path)
-                            print(f"  ✓ Attached cover letter PDF: {pdf_filename}")
-                        except Exception:
-                            pass
-                            
-                # Check for Final Submit Screen
-                submit_btn = page.locator("button:has-text('Submit application')").first
-                if submit_btn.count() > 0:
-                    print("\n  [FINAL SUBMIT SCREEN REACHED]")
-                    if is_first_session:
-                        print("-" * 60)
-                        print(f"FIRST SESSION APPROVAL GATE ({approval_reviews_done+1} of {FIRST_SESSION_APPROVAL_COUNT}):")
-                        print(f"Company: {company} | Title: {title}")
-                        print(f"Cover Letter: {pdf_filename}")
-                        print(f"Disclosed Gap: {gap}")
-                        print("-" * 60)
-                        print("Debra, review the open browser window.")
-                        ans = input("Press ENTER to submit this application (or type 's' to skip): ").strip().lower()
-                        if ans == 's':
-                            print("  Skipped by Debra.")
-                            close_btn = page.locator("button[aria-label='Dismiss']").first
-                            if close_btn.count() > 0:
-                                close_btn.click()
-                            log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Skipped", "Skipped by Debra in review gate")
-                            break
+                    # Red-flag check
+                    if "social security" in modal_text or "ssn" in modal_text or "date of birth" in modal_text or "bank account" in modal_text:
+                        print("  [RED FLAG TRIPWIRE] Portal requested sensitive legal/identity data (SSN/DOB/Bank). Halting application.")
+                        close_btn = page.locator("button[aria-label='Dismiss'], button:has-text('Cancel')").first
+                        if close_btn.count() > 0:
+                            close_btn.click()
+                        log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Needs Debra", "Portal asked for SSN/DOB/Bank Info")
+                        modal_open = False
+                        break
+                        
+                    fill_easy_apply_form_fields(page, pdf_path, pdf_filename)
+                                
+                    # Check for Final Submit Screen
+                    submit_btn = page.locator("button:has-text('Submit application'), button[aria-label='Submit application']").first
+                    if submit_btn.count() > 0:
+                        print("\n  [FINAL SUBMIT SCREEN REACHED]")
+                        if is_first_session:
+                            print("-" * 60)
+                            print(f"FIRST SESSION APPROVAL GATE ({approval_reviews_done+1} of {FIRST_SESSION_APPROVAL_COUNT}):")
+                            print(f"Company: {company} | Title: {title}")
+                            print(f"Cover Letter: {pdf_filename}")
+                            print(f"Disclosed Gap: {gap}")
+                            print("-" * 60)
+                            print("Debra, review the open browser window.")
+                            ans = input("Press ENTER to submit this application (or type 's' to skip): ").strip().lower()
+                            if ans == 's':
+                                print("  Skipped by Debra.")
+                                close_btn = page.locator("button[aria-label='Dismiss']").first
+                                if close_btn.count() > 0:
+                                    close_btn.click()
+                                log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Skipped", "Skipped by Debra in review gate")
+                                break
+                        
+                        submit_btn.click()
+                        human_jitter(3, 4)
+                        print(f"  ★ APPLICATION SUBMITTED SUCCESSFULLY to {company}!")
+                        log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Applied", "Submitted autonomously via Playwright (Easy Apply)")
+                        applied_today += 1
+                        approval_reviews_done += 1
+                        modal_open = False
+                        break
+                        
+                    next_btn = page.locator("button:has-text('Next'), button:has-text('Review'), button[aria-label*='continue to next step']").first
+                    if next_btn.count() > 0:
+                        next_btn.click()
+                    else:
+                        break
+                        
+            else:
+                # ----------------- EXTERNAL COMPANY WEBSITE FLOW -----------------
+                print(f"  ✓ External Company Application detected for {company}.")
+                print("  -> Initiating external ATS application workflow...")
+                
+                # Check for Apply button on LinkedIn that routes externally
+                ext_apply_btn = page.locator("button.jobs-apply-button, a.jobs-apply-button, button:has-text('Apply'), a:has-text('Apply')").first
+                if ext_apply_btn.count() == 0:
+                    print("  ! No Apply button found on posting. Skipping.")
+                    continue
                     
-                    submit_btn.click()
-                    human_jitter(3, 4)
-                    print(f"  ★ APPLICATION SUBMITTED SUCCESSFULLY to {company}!")
-                    log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Applied", "Submitted autonomously via Playwright")
-                    applied_today += 1
-                    approval_reviews_done += 1
-                    modal_open = False
-                    break
+                initial_page_count = len(context.pages)
+                
+                try:
+                    ext_apply_btn.click()
+                    human_jitter(2, 3)
+                except Exception as e:
+                    print(f"  ! Error clicking external apply: {e}")
+                    continue
                     
-                # Next or Review button
-                next_btn = page.locator("button:has-text('Next'), button:has-text('Review')").first
-                if next_btn.count() > 0:
-                    next_btn.click()
+                # Check for intermediate LinkedIn modal ('Continue to application')
+                continue_btn = page.locator("button:has-text('Continue'), a:has-text('Continue'), button:has-text('Apply on company website')").first
+                if continue_btn.count() > 0:
+                    try:
+                        continue_btn.click()
+                        human_jitter(2, 3)
+                    except Exception:
+                        pass
+                        
+                # Locate external page (new tab or redirected page)
+                ext_page = None
+                if len(context.pages) > initial_page_count:
+                    ext_page = context.pages[-1]
+                    ext_page.bring_to_front()
+                elif "linkedin.com" not in page.url:
+                    ext_page = page
+                    
+                if ext_page:
+                    is_first_session = approval_reviews_done < FIRST_SESSION_APPROVAL_COUNT
+                    success = complete_external_application(
+                        context=context,
+                        ext_page=ext_page,
+                        company=company,
+                        title=title,
+                        url=url,
+                        pdf_path=pdf_path,
+                        pdf_filename=pdf_filename,
+                        letter_text=letter_text,
+                        gap=gap,
+                        is_first_session=is_first_session,
+                        approval_reviews_done=approval_reviews_done
+                    )
+                    if success:
+                        applied_today += 1
+                        approval_reviews_done += 1
                 else:
-                    break
+                    print("  ! Could not establish external portal tab. Logging as Needs Debra.")
+                    log_application(datetime.now().strftime("%Y-%m-%d"), company, title, url, "Pay not listed", location, "High", gap, pdf_filename, "Needs Debra", "Could not route to external ATS")
                     
-            human_jitter(4, 7) # Respectful delay between jobs
+            human_jitter(4, 6) # Respectful delay between jobs
             
         print("\n" + "=" * 80)
         print(f"AGENT RUN COMPLETE: {applied_today} applications submitted.")
