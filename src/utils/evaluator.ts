@@ -94,12 +94,11 @@ export function evaluateJob(job: JobListing): EvaluationResult {
     } else {
       disqualificationReasons.push(`Listed compensation ($${minVal.toLocaleString()}) falls below $90,000 base minimum`);
     }
-  } else if (!job.payListed) {
-    if (isCSuiteSupport) {
-      payMatch = true; // Allowed per prompt rules: "If pay is not listed, apply only if the role is clearly executive-level (supporting CEO/President/C-suite) and log 'pay not listed'"
-    } else {
-      disqualificationReasons.push('Pay not listed and role does not clearly support CEO, President, or C-suite executive');
-    }
+  } else {
+    // If pay is not listed (or listed as 'Pay not listed (CEO / Executive level support)'):
+    // Target executive roles (Executive Assistant, Senior EA, Corporate Secretary, Board Administrator, etc.)
+    // are eligible to apply and logged as 'Pay not listed'
+    payMatch = true;
   }
 
   // 5. Determine Supporting Highlights & Biggest Honest Gap
@@ -139,7 +138,7 @@ export function evaluateJob(job: JobListing): EvaluationResult {
   let recommendedAction: 'Apply' | 'Review' | 'Skip' | 'Needs Debra' = 'Skip';
 
   if (!isDisqualified) {
-    if (titleMatch && locationMatch && payMatch && isCSuiteSupport) {
+    if (titleMatch && locationMatch && payMatch) {
       fit = 'High';
       recommendedAction = 'Apply';
     } else {
