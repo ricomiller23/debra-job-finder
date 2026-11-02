@@ -10,13 +10,13 @@ export interface JobListing {
   workplaceType: 'On-site' | 'Hybrid' | 'Remote';
   metroArea: 'Phoenix' | 'Scottsdale' | 'Tempe' | 'Mesa' | 'Chandler' | 'Glendale' | 'Paradise Valley' | 'Outside Metro' | 'Unknown';
   payString: string;
-  payMin?: number;
-  payMax?: number;
+  payMin?: number | null;
+  payMax?: number | null;
   payListed: boolean;
   hiringManager?: string;
   url: string;
   description: string;
-  source: 'LinkedIn' | 'Manual Ingestion' | 'Curated';
+  source: 'LinkedIn' | 'Manual Ingestion' | 'Curated' | string;
   postedDate: string;
 }
 

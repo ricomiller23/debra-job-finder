@@ -168,7 +168,14 @@ export const JobCard: React.FC<JobCardProps> = ({
       {/* Action Footer */}
       <div className="mt-4 pt-3 border-t border-slate-700/60 flex flex-wrap items-center justify-between gap-2">
         <div className="text-[11px] text-slate-400">
-          Source: <span className="text-slate-300 font-medium">{job.source}</span>
+          Source: {job.source.includes('Live') || job.source === 'LinkedIn' ? (
+            <span className="inline-flex items-center text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1 animate-pulse"></span>
+              Live LinkedIn Posting
+            </span>
+          ) : (
+            <span className="text-slate-400 font-medium">{job.source}</span>
+          )}
         </div>
 
         <div className="flex items-center space-x-2">

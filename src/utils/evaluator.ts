@@ -85,11 +85,14 @@ export function evaluateJob(job: JobListing): EvaluationResult {
                           titleLower.includes('corporate secretary') || 
                           titleLower.includes('chief');
 
-  if (job.payListed && job.payMin !== undefined) {
-    if (job.payMin >= 90000 || (job.payMax !== undefined && job.payMax >= 90000)) {
+  const hasNumericPay = typeof job.payMin === 'number' && job.payMin !== null;
+  if (job.payListed && hasNumericPay) {
+    const minVal = job.payMin as number;
+    const maxVal = typeof job.payMax === 'number' && job.payMax !== null ? job.payMax : minVal;
+    if (minVal >= 90000 || maxVal >= 90000) {
       payMatch = true;
     } else {
-      disqualificationReasons.push(`Listed compensation ($${job.payMin.toLocaleString()}) falls below $90,000 base minimum`);
+      disqualificationReasons.push(`Listed compensation ($${minVal.toLocaleString()}) falls below $90,000 base minimum`);
     }
   } else if (!job.payListed) {
     if (isCSuiteSupport) {
